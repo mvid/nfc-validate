@@ -1,18 +1,18 @@
-use bytes::{Bytes, BytesMut, BufMut};
 use cmac::{Cmac, Mac};
 use aes::Aes128;
-use cosmwasm_std::{entry_point, to_binary, Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult, StdError, Storage};
+use cosmwasm_std::{Binary, Deps, DepsMut, entry_point, Env, MessageInfo, Response, StdError, StdResult, to_binary};
 use cosmwasm_storage::PrefixedStorage;
 
 use crate::msg::{AdminResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
-use crate::state::{config, config_read, may_load, save, State, Tag, PREFIX_TAGS};
+use crate::state;
+use crate::state::{config, config_read, may_load, PREFIX_TAGS, save, State, Tag, u32_to_u8_3};
 
 #[entry_point]
 pub fn instantiate(
     deps: DepsMut,
     _env: Env,
     info: MessageInfo,
-    msg: InstantiateMsg,
+    _: InstantiateMsg,
 ) -> StdResult<Response> {
     let state = State {
         admin: deps.api.addr_canonicalize(info.sender.as_str())?,
@@ -28,13 +28,13 @@ pub fn instantiate(
 #[entry_point]
 pub fn execute(deps: DepsMut, _env: Env, info: MessageInfo, msg: ExecuteMsg) -> StdResult<Response> {
     match msg {
-        ExecuteMsg::Register { tag} => try_register(deps, info, tag),
-        ExecuteMsg::Validate { id, count, signature} => try_validate(deps, info,id, count, signature)
+        ExecuteMsg::Register { tag } => try_register(deps, info, tag),
+        ExecuteMsg::Validate { id, count, signature } => try_validate(deps, info, id, count, signature)
     }
 }
 
 
-pub fn try_register(deps: DepsMut, info: MessageInfo, tag: Tag ) -> StdResult<Response> {
+pub fn try_register(deps: DepsMut, info: MessageInfo, tag: Tag) -> StdResult<Response> {
     let sender_address_raw = deps.api.addr_canonicalize(info.sender.as_str())?;
     let state = config_read(deps.storage).load()?;
 
@@ -80,43 +80,46 @@ fn build_mac_message(uid: [u8; 7], count: [u8; 3]) -> [u8; 16] {
     return message;
 }
 
-fn u32_to_u8_3(input: u32) -> [u8; 3] {
-    assert!(input < 16_777_216);
+fn verify_mac(key: [u8; 16], message: [u8; 16], signature: [u8; 8]) -> Result<bool, StdError> {
+    let mut mac = match Cmac::<Aes128>::new_from_slice(key.as_slice()) {
+        Ok(m) => m,
+        Err(e) => return Err(StdError::generic_err(e.to_string())),
+    };
+    mac.update(message.as_slice());
 
-    let mut output: [u8; 3] = [0; 3];
-    let input_bytes = input.to_be_bytes();
-    for i in 0..=2 {
-        output[i] = input_bytes[i + 1];
+    match mac.verify_slice(signature.as_slice()) {
+        Ok(_) => Ok(true),
+        Err(_) => return Ok(false),
     }
-
-    return output;
 }
 
 pub fn try_validate(deps: DepsMut, _info: MessageInfo, tag_id: [u8; 7], count: u32, signature: [u8; 8]) -> StdResult<Response> {
     let mut tag_store = PrefixedStorage::new(deps.storage, PREFIX_TAGS);
-    let mut tag: Tag = match  may_load(&tag_store, &tag_id)? {
+    let mut tag: Tag = match may_load(&tag_store, &tag_id)? {
         Some(t) => t,
         None => return Err(StdError::generic_err("Tag with ID not found")),
     };
 
     // the tag counter is a u24. we need to make sure the value doesn't get exceeded
-    if tag.count >= 16_777_216 {
+    if count >= 16_777_216 {
         return Err(StdError::generic_err("Count maximum has been exceeded"));
     }
 
+    let last_tag_count = tag.count();
     // make sure the submission isn't older than last seen
-    if tag.count >= count {
+    if last_tag_count >= count {
         return Err(StdError::generic_err("Count is older than latest seen"));
     }
-    //
-    // let mut mac = Cmac::<Aes128>::new_from_slice(
-    //     tag.mac_read_key.value.as_slice()).unwrap();
-    // /// SV2 = 3Ch || C3h || 00h || 01h || 00h || 80h [ || UID] [ || SDMReadCtr] [ || ZeroPadding]
-    // /// SesSDMFileReadMACKey = MAC(SDMFileReadKey; SV2)
-    //
-    // // let sv2 = base16.decode("3cc300010080");
-    // // mac.update();
 
+    // validate the signature
+    let message = build_mac_message(tag.id, state::u32_to_u8_3(count));
+    let valid = verify_mac(tag.mac_read_key.value, message, signature)?;
+    if !valid {
+        return Err(StdError::generic_err("Provided signature is invalid"));
+    }
+
+    // save the last seen tag count
+    tag.count = u32_to_u8_3(count);
     save(&mut tag_store, tag_id.as_slice(), &tag)?;
 
     return Ok(Response::default());
@@ -137,35 +140,28 @@ fn query_admin(deps: Deps) -> StdResult<AdminResponse> {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::TryInto;
-    use std::io::Read;
-    // use core::slice::SlicePattern;
     use super::*;
+    use std::convert::TryInto;
     use cosmwasm_std::testing::*;
-    use cosmwasm_std::{from_binary, Coin, Uint128};
+    use cosmwasm_std::{Coin, from_binary, Uint128};
+    use crate::state::u32_to_u8_3;
 
     #[test]
     fn mac_calculation() {
-        let key = base16::decode(b"D83DFF5D173665B1CE275B33B9967EA9").unwrap();
+        // key is D83DFF5D173665B1CE275B33B9967EA9
+        let key: [u8; 16] = [0xD8, 0x3D, 0xFF, 0x5D, 0x17, 0x36, 0x65, 0xB1, 0xCE, 0x27, 0x5B, 0x33, 0xB9, 0x96, 0x7E, 0xA9];
         let count = 13 as u32;
-        let expected_response = b"89CB862EF84B069D";
+        let expected_response = base16::decode(b"89CB862EF84B069D").unwrap();
         let uid = base16::decode(b"048F6A2AAA6180").unwrap();
 
-        let mut mac = Cmac::<Aes128>::new_from_slice(key.as_slice()).unwrap();
-        let sv2 = base16::decode("3cc300010080");
+        // let mut mac = Cmac::<Aes128>::new_from_slice(key.as_slice()).unwrap();
 
         let constructed_message = build_mac_message(
             uid.as_slice().try_into().unwrap(),
-            u32_to_u8_3(count)
+            u32_to_u8_3(count),
         );
-
-        mac.update(constructed_message.as_slice());
-        // assert_eq!(result.into_bytes(), expected_response);
-        let output = mac.finalize();
-        let output_bytes = output.into_bytes();
-        let output_slice = output_bytes.as_slice();
-
-        assert_eq!(expected_response, output_slice);
+        let valid = verify_mac(key, constructed_message, expected_response.as_slice().try_into().unwrap()).unwrap();
+        assert!(valid);
     }
 
     #[test]

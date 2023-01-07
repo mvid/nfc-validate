@@ -6,7 +6,7 @@ use cosmwasm_storage::{ReadonlySingleton, singleton, Singleton, singleton_read};
 use serde::de::DeserializeOwned;
 
 use secret_toolkit::{
-    serialization::{Bincode2, Json, Serde},
+    serialization::{Bincode2, Serde},
 };
 
 pub static CONFIG_KEY: &[u8] = b"config";

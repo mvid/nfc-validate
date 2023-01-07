@@ -1,13 +1,9 @@
-use std::convert::TryInto;
-use std::io::Read;
-use cmac::{Cmac, Mac};
-use aes::Aes128;
 use cosmwasm_std::{Binary, Deps, DepsMut, entry_point, Env, MessageInfo, Response, StdError, StdResult, to_binary};
 use cosmwasm_storage::PrefixedStorage;
 
 use crate::msg::{AdminResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
-use crate::state;
 use crate::state::{config, config_read, may_load, PREFIX_TAGS, save, State, Tag, u32_to_u8_3_lsb};
+use crate::validate::verify_sun;
 
 #[entry_point]
 pub fn instantiate(
@@ -55,61 +51,6 @@ pub fn try_register(deps: DepsMut, info: MessageInfo, tag: Tag) -> StdResult<Res
     save(&mut tag_store, tag.id.as_slice(), &tag)?;
 
     return Ok(Response::default());
-}
-
-// sv2 prefix 3cc300010080
-const SV2_PREFIX: [u8; 6] = [0x3c, 0xc3, 0x00, 0x01, 0x00, 0x80];
-
-fn build_sv2_message(uid: [u8; 7], count_lsb: [u8; 3]) -> [u8; 16] {
-    let mut message: [u8; 16] = [0; 16];
-
-    // set the message prefix
-    for i in 0..6 {
-        message[i] = SV2_PREFIX[i];
-    }
-
-    // append the uid
-    for i in 0..7 {
-        message[i + 6] = uid[i];
-    }
-
-    // append the count
-    for i in 0..3 {
-        message[i + 13] = count_lsb[i];
-    }
-
-    return message;
-}
-
-fn mac_message(key: [u8; 16], message: Vec<u8>) -> Result<Vec<u8>, StdError> {
-    let mut mac = match Cmac::<Aes128>::new_from_slice(key.as_slice()) {
-        Ok(m) => m,
-        Err(e) => return Err(StdError::generic_err(e.to_string())),
-    };
-    mac.update(message.as_slice());
-    let output = mac.finalize().into_bytes().to_vec();
-
-    return Ok(output);
-}
-
-
-// verifies the Secure Unique NFC Message provided in the call
-fn verify_sun(key: [u8; 16], uid: [u8; 7], count: [u8; 3], signature: [u8; 8]) -> Result<(), StdError> {
-    // create initial sv2 message
-    let sv2 = build_sv2_message(uid, count);
-    // MAC the sv2 message with the mac read key
-    let macd_sv2 = mac_message(key, sv2.to_vec())?;
-
-    // use the mac'd message as the new key
-    let macd_message_sized: [u8; 16] = macd_sv2.as_slice().try_into().expect("Cannot unpack MAC SV2 vector");
-    let full_sun = mac_message(macd_message_sized, Vec::new())?;
-    let truncated_sun: [u8; 8] = [full_sun[1], full_sun[3], full_sun[5], full_sun[7], full_sun[9], full_sun[11], full_sun[13], full_sun[15]];
-
-    if truncated_sun != signature {
-        return Err(StdError::generic_err("Provided signature is invalid"));
-    }
-
-    return Ok(());
 }
 
 pub fn try_validate(deps: DepsMut, _info: MessageInfo, tag_id: [u8; 7], count: u32, signature: [u8; 8]) -> StdResult<Response> {
@@ -163,8 +104,8 @@ mod tests {
     use super::*;
     use std::convert::TryInto;
     use cosmwasm_std::testing::*;
-    use cosmwasm_std::{Api, Coin, from_binary, Uint128};
-    use crate::state::u32_to_u8_3_lsb;
+    use cosmwasm_std::{Coin, from_binary, Uint128};
+    use crate::validate::{build_sv2_message, mac_message};
 
     #[test]
     fn mac_calculation_spec() {
@@ -195,7 +136,7 @@ mod tests {
         assert_eq!(expected_macd_message, macd_message_sized);
 
         let macd_full_sun = mac_message(macd_message_sized, Vec::new()).unwrap();
-        let mut truncated_sun: [u8; 8] = [macd_full_sun[1], macd_full_sun[3], macd_full_sun[5], macd_full_sun[7], macd_full_sun[9], macd_full_sun[11], macd_full_sun[13], macd_full_sun[15]];
+        let truncated_sun: [u8; 8] = [macd_full_sun[1], macd_full_sun[3], macd_full_sun[5], macd_full_sun[7], macd_full_sun[9], macd_full_sun[11], macd_full_sun[13], macd_full_sun[15]];
 
         // expected SUN message is 94EED9EE65337086
         let expected_sun: [u8; 8] = [0x94, 0xEE, 0xD9, 0xEE, 0x65, 0x33, 0x70, 0x86];

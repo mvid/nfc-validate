@@ -26,7 +26,7 @@ pub struct Tag {
 
 impl Tag {
     pub fn count(&self) -> u32 {
-        return u8_3_to_u32(self.count);
+        return u8_3_lsb_to_u32(self.count);
     }
 
     fn uid(&self) -> u64 {
@@ -89,20 +89,22 @@ pub fn remove<S: Storage>(storage: &mut S, key: &[u8]) {
     storage.remove(key);
 }
 
-pub fn u32_to_u8_3(input: u32) -> [u8; 3] {
+// a u32 to 3 byte array in LSB
+pub fn u32_to_u8_3_lsb(input: u32) -> [u8; 3] {
     assert!(input < 16_777_216);
 
     let mut output: [u8; 3] = [0; 3];
     let input_bytes = input.to_be_bytes();
     for i in 0..=2 {
-        output[i] = input_bytes[i + 1];
+        output[i] = input_bytes[4 - i];
     }
 
     return output;
 }
 
-pub fn u8_3_to_u32(input: [u8; 3]) -> u32 {
-    let u32_bytes: [u8; 4] = [0x00, input[0], input[1], input[2]];
+// a 3 byte array in LSB to u32
+pub fn u8_3_lsb_to_u32(input: [u8; 3]) -> u32 {
+    let u32_bytes: [u8; 4] = [0x00, input[2], input[1], input[0]];
 
     return u32::from_be_bytes(u32_bytes);
 }

@@ -7,7 +7,7 @@ use cosmwasm_storage::PrefixedStorage;
 
 use crate::msg::{AdminResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
 use crate::state;
-use crate::state::{config, config_read, may_load, PREFIX_TAGS, save, State, Tag, u32_to_u8_3};
+use crate::state::{config, config_read, may_load, PREFIX_TAGS, save, State, Tag, u32_to_u8_3_lsb};
 
 #[entry_point]
 pub fn instantiate(
@@ -93,17 +93,24 @@ fn mac_message(key: [u8; 16], message: Vec<u8>) -> Result<Vec<u8>, StdError> {
     return Ok(output);
 }
 
-fn verify_mac(key: [u8; 16], message: [u8; 16], signature: [u8; 8]) -> Result<bool, StdError> {
-    let mut mac = match Cmac::<Aes128>::new_from_slice(key.as_slice()) {
-        Ok(m) => m,
-        Err(e) => return Err(StdError::generic_err(e.to_string())),
-    };
-    mac.update(message.as_slice());
 
-    match mac.verify_slice(signature.as_slice()) {
-        Ok(_) => Ok(true),
-        Err(_) => return Ok(false),
+// verifies the Secure Unique NFC Message provided in the call
+fn verify_sun(key: [u8; 16], uid: [u8; 7], count: [u8; 3], signature: [u8; 8]) -> Result<(), StdError> {
+    // create initial sv2 message
+    let sv2 = build_sv2_message(uid, count);
+    // MAC the sv2 message with the mac read key
+    let macd_sv2 = mac_message(key, sv2.to_vec())?;
+
+    // use the mac'd message as the new key
+    let macd_message_sized: [u8; 16] = macd_sv2.as_slice().try_into().expect("Cannot unpack MAC SV2 vector");
+    let full_sun = mac_message(macd_message_sized, Vec::new())?;
+    let truncated_sun: [u8; 8] = [full_sun[1], full_sun[3], full_sun[5], full_sun[7], full_sun[9], full_sun[11], full_sun[13], full_sun[15]];
+
+    if truncated_sun != signature {
+        return Err(StdError::generic_err("Provided signature is invalid"));
     }
+
+    return Ok(());
 }
 
 pub fn try_validate(deps: DepsMut, _info: MessageInfo, tag_id: [u8; 7], count: u32, signature: [u8; 8]) -> StdResult<Response> {
@@ -125,14 +132,15 @@ pub fn try_validate(deps: DepsMut, _info: MessageInfo, tag_id: [u8; 7], count: u
     }
 
     // validate the signature
-    let message = build_sv2_message(tag.id, state::u32_to_u8_3(count));
-    let valid = verify_mac(tag.mac_read_key.value, message, signature)?;
-    if !valid {
-        return Err(StdError::generic_err("Provided signature is invalid"));
-    }
+    verify_sun(tag.mac_read_key.value, tag_id, u32_to_u8_3_lsb(count), signature)?;
+    // let message = build_sv2_message(tag.id, state::u32_to_u8_3(count));
+    // let valid = verify_mac(tag.mac_read_key.value, message, signature)?;
+    // if !valid {
+    //     return Err(StdError::generic_err("Provided signature is invalid"));
+    // }
 
     // save the last seen tag count
-    tag.count = u32_to_u8_3(count);
+    tag.count = u32_to_u8_3_lsb(count);
     save(&mut tag_store, tag_id.as_slice(), &tag)?;
 
     return Ok(Response::default());
@@ -157,7 +165,7 @@ mod tests {
     use std::convert::TryInto;
     use cosmwasm_std::testing::*;
     use cosmwasm_std::{Coin, from_binary, Uint128};
-    use crate::state::u32_to_u8_3;
+    use crate::state::u32_to_u8_3_lsb;
 
     #[test]
     fn mac_calculation_spec() {
@@ -166,9 +174,9 @@ mod tests {
         // key is 00000000000000000000000000000000
         let key: [u8; 16] = [0x00; 16];
         // count is 3D0000
-        let count = base16::decode(b"3D0000").unwrap();
+        let count: [u8; 3] = [0x3D, 0x00, 0x00];
         // uid is 04DE5F1EACC040
-        let uid = base16::decode(b"04DE5F1EACC040").unwrap();
+        let uid: [u8; 7] = [0x04, 0xDE, 0x5F, 0x1E, 0xAC, 0xC0, 0x40];
 
         // let mut mac = Cmac::<Aes128>::new_from_slice(key.as_slice()).unwrap();
 
@@ -194,26 +202,23 @@ mod tests {
         let expected_sun: [u8; 8] = [0x94, 0xEE, 0xD9, 0xEE, 0x65, 0x33, 0x70, 0x86];
         assert_eq!(expected_sun, truncated_sun.as_slice());
 
-        // let valid = verify_mac(key, constructed_sv2_message, expected_response.as_slice().try_into().unwrap()).unwrap();
-        // assert!(valid);
+        // make sure function also validates same input
+        verify_sun(key, uid.as_slice().try_into().unwrap(), count, expected_sun).unwrap();
     }
 
     #[test]
     fn mac_calculation() {
         // key is D83DFF5D173665B1CE275B33B9967EA9
-        let key: [u8; 16] = [0xD8, 0x3D, 0xFF, 0x5D, 0x17, 0x36, 0x65, 0xB1, 0xCE, 0x27, 0x5B, 0x33, 0xB9, 0x96, 0x7E, 0xA9];
-        let count = 13 as u32;
-        let expected_response = base16::decode(b"89CB862EF84B069D").unwrap();
-        let uid = base16::decode(b"048F6A2AAA6180").unwrap();
+        // let key: [u8; 16] = [0xD8, 0x3D, 0xFF, 0x5D, 0x17, 0x36, 0x65, 0xB1, 0xCE, 0x27, 0x5B, 0x33, 0xB9, 0x96, 0x7E, 0xA9];
+        let key: [u8; 16] = [0x00; 16];
 
-        // let mut mac = Cmac::<Aes128>::new_from_slice(key.as_slice()).unwrap();
+        // let count : [u8; 3] = [0x00, 0x00, 0x14]; need LSB
+        let count : [u8; 3] = [0x14, 0x00, 0x00];
+        let expected_response: [u8; 8] = base16::decode(b"5A05F24AB8AC29EC").unwrap().as_slice().try_into().unwrap();
+        // let uid = base16::decode(b"048F6A2AAA6180").unwrap();
+        let uid: [u8; 7] = [0x04, 0x8F, 0x6A, 0x2A, 0xAA, 0x61, 0x80];
 
-        let constructed_message = build_sv2_message(
-            uid.as_slice().try_into().unwrap(),
-            u32_to_u8_3(count),
-        );
-        let valid = verify_mac(key, constructed_message, expected_response.as_slice().try_into().unwrap()).unwrap();
-        assert!(valid);
+        verify_sun(key, uid.as_slice().try_into().unwrap(), count, expected_response.as_slice().try_into().unwrap()).unwrap();
     }
 
     #[test]

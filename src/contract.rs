@@ -2,7 +2,7 @@ use cosmwasm_std::{Binary, Deps, DepsMut, entry_point, Env, MessageInfo, Respons
 use cosmwasm_storage::PrefixedStorage;
 
 use crate::msg::{AdminResponse, ExecuteMsg, InstantiateMsg, QueryMsg};
-use crate::state::{config, config_read, may_load, PREFIX_TAGS, save, State, Tag, u32_to_u8_3_lsb};
+use crate::state::{config, config_read, may_load, NewTag, PREFIX_TAGS, save, State, Tag, u32_to_u8_3_lsb, u64_to_u8_7};
 use crate::validate::verify_sun;
 
 #[entry_point]
@@ -32,28 +32,47 @@ pub fn execute(deps: DepsMut, _env: Env, info: MessageInfo, msg: ExecuteMsg) -> 
 }
 
 
-pub fn try_register(deps: DepsMut, info: MessageInfo, tag: Tag) -> StdResult<Response> {
+pub fn try_register(deps: DepsMut, info: MessageInfo, tag: NewTag) -> StdResult<Response> {
+    // check to make sure that the id will fit in 7 bytes
+    if tag.id >= 72_057_594_037_927_935 {
+        return Err(StdError::generic_err("The tag id exceeds possible limits"));
+    }
+    let tag_id = u64_to_u8_7(tag.id);
+
+    // validate that the admin is the one registering the tag
     let sender_address_raw = deps.api.addr_canonicalize(info.sender.as_str())?;
     let state = config_read(deps.storage).load()?;
-
 
     if sender_address_raw != state.admin {
         return Err(StdError::generic_err("Only the contract admin can register new tags"));
     }
 
     let mut tag_store = PrefixedStorage::new(deps.storage, PREFIX_TAGS);
-    let existing_tag: Option<Tag> = may_load(&tag_store, &tag.id)?;
+    let existing_tag: Option<Tag> = may_load(&tag_store, &tag_id.as_slice())?;
 
     if existing_tag.is_some() {
         return Err(StdError::generic_err("Tag with ID already registered"));
     }
 
-    save(&mut tag_store, tag.id.as_slice(), &tag)?;
+    let new_tag = Tag{
+        id: tag_id,
+        change_key: tag.change_key,
+        mac_read_key: tag.mac_read_key,
+        count: [0x00, 0x00, 0x00],
+    };
+    save(&mut tag_store, tag_id.as_slice(), &new_tag)?;
 
     return Ok(Response::default());
 }
 
-pub fn try_validate(deps: DepsMut, _info: MessageInfo, tag_id: [u8; 7], count: u32, signature: [u8; 8]) -> StdResult<Response> {
+pub fn try_validate(deps: DepsMut, _info: MessageInfo, id: u64, count: u32, signature: [u8; 8]) -> StdResult<Response> {
+    // check to make sure that the id will fit in 7 bytes
+    if id >= 72_057_594_037_927_935 {
+        return Err(StdError::generic_err("The tag id exceeds possible limits"));
+    }
+    let tag_id = u64_to_u8_7(id);
+
+    // make sure the tag exists and retrieve it
     let mut tag_store = PrefixedStorage::new(deps.storage, PREFIX_TAGS);
     let mut tag: Tag = match may_load(&tag_store, &tag_id)? {
         Some(t) => t,
@@ -73,11 +92,6 @@ pub fn try_validate(deps: DepsMut, _info: MessageInfo, tag_id: [u8; 7], count: u
 
     // validate the signature
     verify_sun(tag.mac_read_key.value, tag_id, u32_to_u8_3_lsb(count), signature)?;
-    // let message = build_sv2_message(tag.id, state::u32_to_u8_3(count));
-    // let valid = verify_mac(tag.mac_read_key.value, message, signature)?;
-    // if !valid {
-    //     return Err(StdError::generic_err("Provided signature is invalid"));
-    // }
 
     // save the last seen tag count
     tag.count = u32_to_u8_3_lsb(count);
@@ -109,7 +123,7 @@ mod tests {
 
     #[test]
     fn mac_calculation_spec() {
-        //     based on https://www.nxp.com/docs/en/application-note/AN12196.pdf#page=24
+        // based on https://www.nxp.com/docs/en/application-note/AN12196.pdf#page=24
 
         // key is 00000000000000000000000000000000
         let key: [u8; 16] = [0x00; 16];
@@ -171,7 +185,7 @@ mod tests {
                 amount: Uint128::new(1000),
             }],
         );
-        let init_msg = InstantiateMsg { count: 17 };
+        let init_msg = InstantiateMsg {};
 
         // we can just call .unwrap() to assert this was a success
         let res = instantiate(deps.as_mut(), mock_env(), info, init_msg).unwrap();

@@ -34,6 +34,13 @@ impl Tag {
     }
 }
 
+#[derive(Serialize, Deserialize, Eq, PartialEq, Debug, Clone, JsonSchema)]
+pub struct NewTag {
+    pub id: u64,
+    pub change_key: Key,
+    pub mac_read_key: Key,
+}
+
 #[derive(Serialize, Deserialize, PartialEq, Eq, Debug, Clone, JsonSchema)]
 pub struct Key {
     pub value: [u8; 16],

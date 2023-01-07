@@ -1,17 +1,15 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use crate::state::Tag;
+use crate::state::{NewTag};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, JsonSchema)]
-pub struct InstantiateMsg {
-    pub count: i32,
-}
+pub struct InstantiateMsg {}
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecuteMsg {
-    Register { tag: Tag },
-    Validate {id: [u8; 7], count: u32, signature: [u8; 8]}
+    Register { tag: NewTag },
+    Validate { id: u64, count: u32, signature: [u8; 8] },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Eq, PartialEq, JsonSchema)]

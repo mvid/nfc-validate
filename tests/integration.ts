@@ -147,26 +147,27 @@ async function initializeAndUploadContract() {
   return clientInfo;
 }
 
-async function queryCount(
+
+async function queryAdmin(
   client: SecretNetworkClient,
   contractHash: string,
   contractAddress: string
-): Promise<number> {
-  type CountResponse = { count: number };
+): Promise<string> {
+  type AdminResponse = { admin: string };
 
-  const countResponse = (await client.query.compute.queryContract({
+  const adminResponse = (await client.query.compute.queryContract({
     contract_address: contractAddress,
     code_hash: contractHash,
-    query: { get_count: {} },
-  })) as CountResponse;
+    query: { get_admin: {} },
+  })) as AdminResponse;
 
-  if ('err"' in countResponse) {
+  if ('err"' in adminResponse) {
     throw new Error(
-      `Query failed with the following err: ${JSON.stringify(countResponse)}`
+      `Query failed with the following err: ${JSON.stringify(adminResponse)}`
     );
   }
 
-  return countResponse.count;
+  return adminResponse.admin;
 }
 
 async function incrementTx(
@@ -193,10 +194,22 @@ async function incrementTx(
   console.log(`Increment TX used ${tx.gasUsed} gas`);
 }
 
-async function resetTx(
+type Key = {
+  value: Array<number>,
+  version: number,
+}
+
+type NewTag = {
+  id: number,
+  change_key: Key,
+  mac_read_key: Key,
+};
+
+async function registerTagTx(
   client: SecretNetworkClient,
   contractHash: string,
-  contractAddess: string
+  contractAddess: string,
+  new_tag: NewTag,
 ) {
   const tx = await client.tx.compute.executeContract(
     {
@@ -204,7 +217,9 @@ async function resetTx(
       contract_address: contractAddess,
       code_hash: contractHash,
       msg: {
-        reser: { count: 0 },
+        register: {
+          tag: new_tag,
+        },
       },
       sent_funds: [],
     },
@@ -213,23 +228,25 @@ async function resetTx(
     }
   );
 
-  console.log(`Reset TX used ${tx.gasUsed} gas`);
+  //let parsedTransactionData = JSON.parse(fromUtf8(tx.data[0])); // In our case we don't really need to access transaction data
+  console.log(`Register Tag TX used ${tx.gasUsed} gas`);
 }
 
+
 // The following functions are only some examples of how to write integration tests, there are many tests that we might want to write here.
-async function test_count_on_intialization(
+async function test_admin_on_intialization(
   client: SecretNetworkClient,
   contractHash: string,
   contractAddress: string
 ) {
-  const onInitializationCounter: number = await queryCount(
+  const onInitializationAdmin: string = await queryAdmin(
     client,
     contractHash,
     contractAddress
   );
   assert(
-    onInitializationCounter === 4,
-    `The counter on initialization expected to be 4 instead of ${onInitializationCounter}`
+    onInitializationAdmin === client.address,
+    `The admin on initialization expected to be ${client.address} instead of ${onInitializationAdmin}`
   );
 }
 
@@ -262,8 +279,28 @@ async function test_increment_stress(
   );
 }
 
+async function test_register_tag(
+  client: SecretNetworkClient,
+  contractHash: string,
+  contractAddress: string
+) {
+  let newTag: NewTag = {
+    id: 1370400024739904,
+    change_key: {
+      value: [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+      version: 0,
+    },
+    mac_read_key: {
+      value: [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+      version: 0,
+    },
+  };
+
+  await registerTagTx(client, contractHash, contractAddress, newTag);
+}
+
 async function test_gas_limits() {
-  // There is no accurate way to measue gas limits but it is actually very recommended to make sure that the gas that is used by a specific tx makes sense
+  // There is no accurate way to measure gas limits, but it is actually very recommended to make sure that the gas that is used by a specific tx makes sense
 }
 
 async function runTestFunction(
@@ -286,13 +323,13 @@ async function runTestFunction(
     await initializeAndUploadContract();
 
   await runTestFunction(
-    test_count_on_intialization,
+    test_admin_on_intialization,
     client,
     contractHash,
     contractAddress
   );
   await runTestFunction(
-    test_increment_stress,
+    test_register_tag,
     client,
     contractHash,
     contractAddress

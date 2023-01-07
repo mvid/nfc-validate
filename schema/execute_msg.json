@@ -1,0 +1,112 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ExecuteMsg",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "register"
+      ],
+      "properties": {
+        "register": {
+          "type": "object",
+          "required": [
+            "tag"
+          ],
+          "properties": {
+            "tag": {
+              "$ref": "#/definitions/NewTag"
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "validate"
+      ],
+      "properties": {
+        "validate": {
+          "type": "object",
+          "required": [
+            "count",
+            "id",
+            "signature"
+          ],
+          "properties": {
+            "count": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0.0
+            },
+            "id": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0.0
+            },
+            "signature": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "uint8",
+                "minimum": 0.0
+              },
+              "maxItems": 8,
+              "minItems": 8
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "definitions": {
+    "Key": {
+      "type": "object",
+      "required": [
+        "value",
+        "version"
+      ],
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "minimum": 0.0
+          },
+          "maxItems": 16,
+          "minItems": 16
+        },
+        "version": {
+          "type": "integer",
+          "format": "uint8",
+          "minimum": 0.0
+        }
+      }
+    },
+    "NewTag": {
+      "type": "object",
+      "required": [
+        "change_key",
+        "id",
+        "mac_read_key"
+      ],
+      "properties": {
+        "change_key": {
+          "$ref": "#/definitions/Key"
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "mac_read_key": {
+          "$ref": "#/definitions/Key"
+        }
+      }
+    }
+  }
+}

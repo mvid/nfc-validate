@@ -52,21 +52,20 @@ pub fn try_register(deps: DepsMut, info: MessageInfo, tag: Tag) -> StdResult<Res
         return Err(StdError::generic_err("Tag with ID already registered"));
     }
 
-    // tag_store.set(tag.id.as_slice(), &Bincode2::serialize(&tag)?);
     save(&mut tag_store, tag.id.as_slice(), &tag)?;
 
     return Ok(Response::default());
 }
 
 // sv2 prefix 3cc300010080
-const MAC_PREFIX: [u8; 6] = [0x3c, 0xc3, 0x00, 0x01, 0x00, 0x80];
+const SV2_PREFIX: [u8; 6] = [0x3c, 0xc3, 0x00, 0x01, 0x00, 0x80];
 
-fn build_sv2_message(uid: [u8; 7], count: [u8; 3]) -> [u8; 16] {
+fn build_sv2_message(uid: [u8; 7], count_lsb: [u8; 3]) -> [u8; 16] {
     let mut message: [u8; 16] = [0; 16];
 
     // set the message prefix
     for i in 0..6 {
-        message[i] = MAC_PREFIX[i];
+        message[i] = SV2_PREFIX[i];
     }
 
     // append the uid
@@ -76,7 +75,7 @@ fn build_sv2_message(uid: [u8; 7], count: [u8; 3]) -> [u8; 16] {
 
     // append the count
     for i in 0..3 {
-        message[i + 13] = count[i];
+        message[i + 13] = count_lsb[i];
     }
 
     return message;
@@ -156,7 +155,7 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
 fn query_admin(deps: Deps) -> StdResult<AdminResponse> {
     let state = config_read(deps.storage).load()?;
 
-    Ok(AdminResponse { admin: state.admin.to_string() })
+    Ok(AdminResponse { admin: deps.api.addr_humanize(&state.admin)?.to_string() })
 }
 
 #[cfg(test)]
@@ -164,7 +163,7 @@ mod tests {
     use super::*;
     use std::convert::TryInto;
     use cosmwasm_std::testing::*;
-    use cosmwasm_std::{Coin, from_binary, Uint128};
+    use cosmwasm_std::{Api, Coin, from_binary, Uint128};
     use crate::state::u32_to_u8_3_lsb;
 
     #[test]
